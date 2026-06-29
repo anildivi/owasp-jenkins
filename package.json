@@ -1,0 +1,60 @@
+// Alternative pipeline: uses the official OWASP Dependency-Check Docker
+// image directly, so you don't need to install the Jenkins plugin or
+// configure a Global Tool. Useful when Jenkins agents already have Docker.
+
+pipeline {
+    agent any
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Install Dependencies') {
+            agent { docker { image 'node:20-alpine' } }
+            steps {
+                sh 'npm ci'
+            }
+        }
+
+        stage('OWASP Dependency-Check (Docker)') {
+            steps {
+                sh '''
+                    mkdir -p dependency-check-report dc-data
+
+                    docker run --rm \
+                        -v "$(pwd)":/src \
+                        -v "$(pwd)/dc-data":/usr/share/dependency-check/data \
+                        owasp/dependency-check:latest \
+                        --scan /src \
+                        --format HTML \
+                        --format XML \
+                        --out /src/dependency-check-report \
+                        --project "owasp-jenkins-demo" \
+                        --failOnCVSS 7
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'dependency-check-report/**', allowEmptyArchive: true
+                    publishHTML(target: [
+                        reportDir: 'dependency-check-report',
+                        reportFiles: 'dependency-check-report.html',
+                        reportName: 'OWASP Dependency-Check Report',
+                        keepAll: true,
+                        alwaysLinkToLastBuild: true
+                    ])
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo 'Vulnerabilities at or above CVSS 7 were found. See the published HTML report.'
+        }
+    }
+}

@@ -1,0 +1,88 @@
+pipeline {
+    agent any
+
+    environment {
+        // Name must match the "Dependency-Check" tool installation
+        // configured in Manage Jenkins > Global Tool Configuration
+        DC_HOME = tool name: 'Dependency-Check', type: 'org.jenkinsci.plugins.DependencyCheck.tools.DependencyCheckInstallation'
+    }
+
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm ci'
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                sh 'npm test'
+            }
+        }
+
+        stage('OWASP Dependency-Check') {
+            steps {
+                // Requires the "OWASP Dependency-Check" Jenkins plugin
+                dependencyCheck additionalArguments: '''
+                    --scan .
+                    --format XML
+                    --format HTML
+                    --out dependency-check-report
+                    --failOnCVSS 7
+                    --enableRetired
+                ''', odcInstallation: 'Dependency-Check'
+            }
+            post {
+                always {
+                    // Publishes results to the Jenkins UI (trend graph + findings)
+                    dependencyCheckPublisher pattern: 'dependency-check-report/dependency-check-report.xml'
+                    archiveArtifacts artifacts: 'dependency-check-report/**', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                script {
+                    // dependencyCheckPublisher sets build result to UNSTABLE/FAILURE
+                    // based on configured thresholds in plugin settings.
+                    // This stage just makes the gate explicit and visible in logs.
+                    if (currentBuild.result == 'UNSTABLE' || currentBuild.result == 'FAILURE') {
+                        error("OWASP Dependency-Check found vulnerabilities above the allowed threshold. Failing pipeline.")
+                    }
+                }
+            }
+        }
+
+        stage('Build') {
+            when {
+                expression { currentBuild.result == null || currentBuild.result == 'SUCCESS' }
+            }
+            steps {
+                echo 'Build steps would run here (only if the scan passed).'
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline finished with status: ${currentBuild.result ?: 'SUCCESS'}"
+        }
+        failure {
+            // e.g. mail to: 'security-team@example.com', subject: "Build failed: vulnerable dependencies", body: "Check the Dependency-Check report."
+            echo 'Notify security team here (email/Slack) on failure.'
+        }
+    }
+}
